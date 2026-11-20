@@ -14,7 +14,7 @@ VOICE = "en-US-ChristopherNeural"
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
 def generate_content():
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    models = ["gemini-2.0-flash", "gemini-flash-latest", "gemini-2.5-flash", "gemini-1.5-flash"]
     prompt = f"""
     Create a viral YouTube Short about: {NICHE}.
     Return ONLY valid JSON with these exact keys:
@@ -27,10 +27,17 @@ def generate_content():
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"responseMimeType": "application/json"}
     }
-    res = requests.post(url, json=payload, timeout=60)
-    res.raise_for_status()
-    text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
-    return json.loads(text)
+    last_err = ""
+    for m in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={GEMINI_API_KEY}"
+        res = requests.post(url, json=payload, timeout=60)
+        if res.status_code == 200:
+            print("Using model:", m)
+            text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+            return json.loads(text)
+        last_err = f"{m} -> {res.status_code}: {res.text}"
+        print(last_err)
+    raise RuntimeError(f"All Gemini models failed. Last error: {last_err}")
 
 def create_voice_and_subs(script):
     subprocess.run([
