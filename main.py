@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import random
 import urllib.parse
@@ -11,47 +12,58 @@ from googleapiclient.http import MediaFileUpload
 NICHE = "Dark Psychology and Mind-Blowing Human Facts"
 VOICE = "en-US-ChristopherNeural"
 
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-def get_working_model():
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
-    res = requests.get(url, timeout=30)
-    if res.status_code != 200:
-        raise RuntimeError(f"API Key error ({res.status_code}): {res.text}")
-    models = res.json().get("models", [])
-    valid = [
-        m["name"] for m in models
-        if "generateContent" in m.get("supportedGenerationMethods", [])
-        and "gemini" in m["name"].lower()
-    ]
-    print("Available models:", valid[:5])
-    for m in valid:
-        if "flash" in m.lower():
-            return m
-    if valid:
-        return valid[0]
-    raise RuntimeError("No working Gemini model found for this API key.")
+def clean_json(text):
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    return json.loads(text)
 
 def generate_content():
-    model_name = get_working_model()
-    print("Selected model:", model_name)
-    url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={GEMINI_API_KEY}"
     prompt = f"""
     Create a viral YouTube Short about: {NICHE}.
-    Return ONLY valid JSON with these exact keys:
+    Return ONLY valid JSON (no extra text) with these exact keys:
     - "title": catchy viral title under 65 characters including #shorts
     - "description": short engaging description with 5 relevant hashtags
     - "script": 90 to 110 words spoken script. Start with a strong curiosity hook in sentence 1. Short punchy sentences. No emojis, no stage directions, plain spoken English only.
     - "image_prompts": list of 5 detailed, dark, moody, cinematic vertical art prompts matching the story (no text inside images).
     """
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json"}
-    }
-    res = requests.post(url, json=payload, timeout=60)
-    res.raise_for_status()
-    text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
-    return json.loads(text)
+
+    # Try Vertex / Gemini first if key works
+    for url in [
+        f"https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}",
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}",
+    ]:
+        try:
+            r = requests.post(
+                url,
+                json={
+                    "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                    "generationConfig": {"responseMimeType": "application/json"},
+                },
+                timeout=30,
+            )
+            if r.status_code == 200:
+                text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                return clean_json(text)
+        except Exception as e:
+            print("Gemini attempt skipped:", e)
+
+    # Free no-key fallback (Pollinations OpenAI-compatible endpoint)
+    print("Using free fallback AI for script...")
+    r = requests.post(
+        "https://text.pollinations.ai/openai",
+        json={
+            "model": "openai",
+            "messages": [{"role": "user", "content": prompt}],
+            "jsonMode": True,
+        },
+        timeout=60,
+    )
+    r.raise_for_status()
+    text = r.json()["choices"][0]["message"]["content"]
+    return clean_json(text)
 
 def create_voice_and_subs(script):
     subprocess.run([
@@ -71,11 +83,16 @@ def download_images(prompts):
         seed = random.randint(1, 999999)
         url = f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=1920&nologo=true&seed={seed}"
         img_name = f"img_{i}.jpg"
-        r = requests.get(url, timeout=90)
-        if r.status_code == 200:
-            with open(img_name, "wb") as f:
-                f.write(r.content)
-            files.append(img_name)
+        for _ in range(2):
+            try:
+                r = requests.get(url, timeout=90)
+                if r.status_code == 200 and len(r.content) > 5000:
+                    with open(img_name, "wb") as f:
+                        f.write(r.content)
+                    files.append(img_name)
+                    break
+            except Exception:
+                pass
     if not files:
         raise RuntimeError("No images downloaded.")
     return files
