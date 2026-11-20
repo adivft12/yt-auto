@@ -13,8 +13,29 @@ VOICE = "en-US-ChristopherNeural"
 
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
+def get_working_model():
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
+    res = requests.get(url, timeout=30)
+    if res.status_code != 200:
+        raise RuntimeError(f"API Key error ({res.status_code}): {res.text}")
+    models = res.json().get("models", [])
+    valid = [
+        m["name"] for m in models
+        if "generateContent" in m.get("supportedGenerationMethods", [])
+        and "gemini" in m["name"].lower()
+    ]
+    print("Available models:", valid[:5])
+    for m in valid:
+        if "flash" in m.lower():
+            return m
+    if valid:
+        return valid[0]
+    raise RuntimeError("No working Gemini model found for this API key.")
+
 def generate_content():
-    models = ["gemini-2.0-flash", "gemini-flash-latest", "gemini-2.5-flash", "gemini-1.5-flash"]
+    model_name = get_working_model()
+    print("Selected model:", model_name)
+    url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={GEMINI_API_KEY}"
     prompt = f"""
     Create a viral YouTube Short about: {NICHE}.
     Return ONLY valid JSON with these exact keys:
@@ -27,17 +48,10 @@ def generate_content():
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"responseMimeType": "application/json"}
     }
-    last_err = ""
-    for m in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={GEMINI_API_KEY}"
-        res = requests.post(url, json=payload, timeout=60)
-        if res.status_code == 200:
-            print("Using model:", m)
-            text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
-            return json.loads(text)
-        last_err = f"{m} -> {res.status_code}: {res.text}"
-        print(last_err)
-    raise RuntimeError(f"All Gemini models failed. Last error: {last_err}")
+    res = requests.post(url, json=payload, timeout=60)
+    res.raise_for_status()
+    text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+    return json.loads(text)
 
 def create_voice_and_subs(script):
     subprocess.run([
